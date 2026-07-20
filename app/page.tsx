@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import { STATIC_METRICS, buildEngagementMetrics, filterToAvailableMetrics } from "@/lib/metrics";
 import TrendChart from "@/components/TrendChart";
 import SummaryTable from "@/components/SummaryTable";
@@ -334,16 +334,44 @@ export default function Home() {
     );
   }
 
+  // ── Resizable panel widths ────────────────────────────────────────────────
+  const [metricsW, setMetricsW] = useState(180);
+  const [filtersW, setFiltersW] = useState(220);
+  const [chartH,   setChartH]  = useState(340);
+  const dragging = useRef<null | { which: "m"|"f"|"ch"; startX: number; startY: number; startVal: number }>(null);
+
+  const onDragStart = useCallback((which: "m"|"f"|"ch", e: React.MouseEvent) => {
+    e.preventDefault();
+    dragging.current = {
+      which,
+      startX: e.clientX,
+      startY: e.clientY,
+      startVal: which === "m" ? metricsW : which === "f" ? filtersW : chartH,
+    };
+    const move = (ev: MouseEvent) => {
+      if (!dragging.current) return;
+      const { which: w, startX, startY, startVal } = dragging.current;
+      if (w === "m") setMetricsW(Math.max(120, Math.min(400, startVal + ev.clientX - startX)));
+      else if (w === "f") setFiltersW(Math.max(140, Math.min(450, startVal + ev.clientX - startX)));
+      else setChartH(Math.max(180, Math.min(700, startVal + ev.clientY - startY)));
+    };
+    const up = () => { dragging.current = null; window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }, [metricsW, filtersW, chartH]);
+
   // ── Dashboard ──────────────────────────────────────────────────────────────
   return (
-    <div className="flex h-screen bg-gray-100 overflow-hidden text-sm">
+    <div className="flex h-screen bg-gray-100 overflow-hidden text-sm select-none">
 
-      {/* ══ LEFT SIDEBAR: metric list + filters ═══════════════════════════════ */}
-      <aside className="w-56 shrink-0 flex flex-col bg-white border-r border-gray-200 overflow-hidden">
-
-        {/* Logo / upload */}
-        <div className="px-3 py-3 border-b border-gray-200 shrink-0 flex items-center justify-between">
-          <span className="font-bold text-gray-800 text-sm">📊 ExpDash</span>
+      {/* ══ COLUMN 1: Metric list ════════════════════════════════════════════ */}
+      <div
+        className="shrink-0 flex flex-col bg-white border-r border-gray-200 overflow-hidden"
+        style={{ width: metricsW }}
+      >
+        {/* Header */}
+        <div className="px-3 py-2.5 border-b border-gray-200 shrink-0 flex items-center justify-between bg-gray-50">
+          <span className="font-bold text-gray-700 text-xs uppercase tracking-wide">Metrics</span>
           <label className="text-xs text-blue-500 cursor-pointer hover:underline">
             New file
             <input type="file" accept=".xlsx,.xls" className="hidden" onChange={onFile} />
@@ -351,11 +379,10 @@ export default function Home() {
         </div>
 
         {/* Metric list */}
-        <div className="flex-1 overflow-y-auto p-2 border-b border-gray-200">
-          <p className="text-xs font-semibold text-gray-400 uppercase px-1 mb-1">Metrics</p>
+        <div className="flex-1 overflow-y-auto p-2">
           {[...metricSections.entries()].map(([section, mlist]) => (
             <div key={section} className="mb-3">
-              <p className="text-xs text-gray-400 px-1 mb-0.5">{section}</p>
+              <p className="text-xs text-gray-400 px-1 mb-0.5 font-medium">{section}</p>
               {mlist.map(m => (
                 <button key={m.key} onClick={() => setMetricKey(m.key)}
                   className={`w-full text-left px-2 py-1 rounded text-xs transition ${
@@ -369,76 +396,87 @@ export default function Home() {
             </div>
           ))}
         </div>
+      </div>
 
-        {/* Filters — always visible */}
-        <div className="overflow-y-auto p-2" style={{ maxHeight: "45%" }}>
-          <p className="text-xs font-semibold text-gray-400 uppercase px-1 mb-2">Filters</p>
+      {/* Drag handle 1 — resize metrics panel */}
+      <div
+        className="w-1 shrink-0 bg-gray-200 hover:bg-blue-400 cursor-col-resize transition-colors"
+        onMouseDown={e => onDragStart("m", e)}
+        title="Drag to resize"
+      />
 
+      {/* ══ COLUMN 2: Filters ════════════════════════════════════════════════ */}
+      <div
+        className="shrink-0 flex flex-col bg-white border-r border-gray-200 overflow-hidden"
+        style={{ width: filtersW }}
+      >
+        {/* Header */}
+        <div className="px-3 py-2.5 border-b border-gray-200 shrink-0 bg-gray-50 flex items-center justify-between">
+          <span className="font-bold text-gray-700 text-xs uppercase tracking-wide">Filters</span>
+          <button onClick={() => setFilters(EMPTY_FILTERS)} className="text-xs text-red-400 hover:text-red-600">
+            Reset
+          </button>
+        </div>
+
+        {/* Filter options */}
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {tab !== "IR" && filterOpts.type.length > 0 && (
-            <MultiSelect label="Data Type"
-              opts={filterOpts.type} sel={filters.type}
+            <MultiSelect label="Data Type" opts={filterOpts.type} sel={filters.type}
               onChange={v => setFilters(f => ({ ...f, type: v }))} />
           )}
           {filterOpts.geo.length > 0 && (
-            <MultiSelect label="Geo"
-              opts={filterOpts.geo} sel={filters.geo}
+            <MultiSelect label="Geo" opts={filterOpts.geo} sel={filters.geo}
               onChange={v => setFilters(f => ({ ...f, geo: v }))} />
           )}
           {tab !== "IR" && filterOpts.user_type.length > 0 && (
-            <MultiSelect label="User Type"
-              opts={filterOpts.user_type} sel={filters.user_type}
+            <MultiSelect label="User Type" opts={filterOpts.user_type} sel={filters.user_type}
               onChange={v => setFilters(f => ({ ...f, user_type: v }))} />
           )}
           {tab !== "IR" && filterOpts.cohort.length > 0 && (
-            <MultiSelect label="Cohort"
-              opts={filterOpts.cohort} sel={filters.cohort}
+            <MultiSelect label="Cohort" opts={filterOpts.cohort} sel={filters.cohort}
               onChange={v => setFilters(f => ({ ...f, cohort: v }))} />
           )}
           {tab !== "IR" && filterOpts.payer_flag.length > 0 && (
-            <MultiSelect label="Payer Flag"
-              opts={filterOpts.payer_flag} sel={filters.payer_flag}
+            <MultiSelect label="Payer Flag" opts={filterOpts.payer_flag} sel={filters.payer_flag}
               onChange={v => setFilters(f => ({ ...f, payer_flag: v }))} />
           )}
           {filterOpts.install_source.length > 0 && (
-            <MultiSelect label="Install Source"
-              opts={filterOpts.install_source} sel={filters.install_source}
+            <MultiSelect label="Install Source" opts={filterOpts.install_source} sel={filters.install_source}
               onChange={v => setFilters(f => ({ ...f, install_source: v }))} />
           )}
           {filterOpts.install_bucket.length > 0 && (
-            <MultiSelect label="Install Bucket"
-              opts={filterOpts.install_bucket} sel={filters.install_bucket}
+            <MultiSelect label="Install Bucket" opts={filterOpts.install_bucket} sel={filters.install_bucket}
               onChange={v => setFilters(f => ({ ...f, install_bucket: v }))} />
           )}
           {filterOpts.install_type.length > 0 && (
-            <MultiSelect label="Install Type"
-              opts={filterOpts.install_type} sel={filters.install_type}
+            <MultiSelect label="Install Type" opts={filterOpts.install_type} sel={filters.install_type}
               onChange={v => setFilters(f => ({ ...f, install_type: v }))} />
           )}
-
-          {/* Reset */}
-          <button
-            onClick={() => setFilters(EMPTY_FILTERS)}
-            className="mt-1 w-full text-xs text-red-400 hover:text-red-600 text-left px-1"
-          >
-            ✕ Reset all filters
-          </button>
+          {Object.keys(filterOpts).every(k => !filterOpts[k as keyof typeof filterOpts].length) && (
+            <p className="text-xs text-gray-400 px-1 mt-4 text-center">Upload a file to see filters</p>
+          )}
         </div>
-      </aside>
+      </div>
 
-      {/* ══ MAIN AREA ════════════════════════════════════════════════════════ */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      {/* Drag handle 2 — resize filters panel */}
+      <div
+        className="w-1 shrink-0 bg-gray-200 hover:bg-blue-400 cursor-col-resize transition-colors"
+        onMouseDown={e => onDragStart("f", e)}
+        title="Drag to resize"
+      />
 
-        {/* ── Top bar: tabs + controls ─────────────────────────────────────── */}
+      {/* ══ COLUMN 3: Main area ══════════════════════════════════════════════ */}
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+
+        {/* ── Top bar ──────────────────────────────────────────────────────── */}
         <div className="bg-white border-b border-gray-200 shrink-0">
 
           {/* Tab row */}
-          <div className="px-4 flex items-center gap-1">
+          <div className="px-4 flex items-center gap-0.5 overflow-x-auto">
             {TABS.map(t => (
               <button key={t} onClick={() => switchTab(t)}
-                className={`px-4 py-2.5 text-sm font-medium border-b-2 transition ${
-                  tab === t
-                    ? "border-blue-600 text-blue-600"
-                    : "border-transparent text-gray-500 hover:text-gray-700"
+                className={`px-4 py-2.5 text-sm font-medium border-b-2 whitespace-nowrap transition ${
+                  tab === t ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
                 }`}>
                 {t}
               </button>
@@ -446,17 +484,14 @@ export default function Home() {
           </div>
 
           {/* Controls row */}
-          <div className="px-4 pb-2 flex flex-wrap items-center gap-4">
-
+          <div className="px-4 pb-2 flex flex-wrap items-center gap-3">
             {/* Group by */}
             <div className="flex items-center gap-1.5">
               <span className="text-xs text-gray-400 font-semibold uppercase">Group</span>
               {(["variant", "sub_variant", "both"] as GroupBy[]).map(g => (
                 <button key={g} onClick={() => setGroupBy(g)}
                   className={`px-2.5 py-0.5 rounded text-xs font-medium border transition ${
-                    groupBy === g
-                      ? "bg-blue-600 text-white border-blue-600"
-                      : "bg-white text-gray-600 border-gray-300 hover:border-blue-400"
+                    groupBy === g ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-300 hover:border-blue-400"
                   }`}>
                   {g === "both" ? "Var × Sub" : g === "variant" ? "Variant" : "Sub-variant"}
                 </button>
@@ -466,8 +501,7 @@ export default function Home() {
             {/* Control */}
             <div className="flex items-center gap-1.5">
               <span className="text-xs text-gray-400 font-semibold uppercase">Control</span>
-              <select
-                className="border border-gray-200 rounded px-2 py-0.5 text-xs bg-white"
+              <select className="border border-gray-200 rounded px-2 py-0.5 text-xs bg-white"
                 value={controlVar} onChange={e => setControl(e.target.value)}>
                 {filterOpts.variant.map(v => <option key={v}>{v}</option>)}
               </select>
@@ -476,14 +510,12 @@ export default function Home() {
             {/* Date range */}
             <div className="flex items-center gap-1.5 ml-auto">
               <span className="text-xs text-gray-400 font-semibold uppercase">Date</span>
-              <input type="date"
-                value={dateRange[0]}
+              <input type="date" value={dateRange[0]}
                 min={allDates[0]} max={allDates[allDates.length - 1]}
                 onChange={e => setDateRange([e.target.value, dateRange[1]])}
                 className="border border-gray-200 rounded px-2 py-0.5 text-xs" />
               <span className="text-gray-400 text-xs">→</span>
-              <input type="date"
-                value={dateRange[1]}
+              <input type="date" value={dateRange[1]}
                 min={allDates[0]} max={allDates[allDates.length - 1]}
                 onChange={e => setDateRange([dateRange[0], e.target.value])}
                 className="border border-gray-200 rounded px-2 py-0.5 text-xs" />
@@ -491,31 +523,25 @@ export default function Home() {
           </div>
         </div>
 
-        {/* ── Chart area ───────────────────────────────────────────────────── */}
+        {/* ── Scrollable content ────────────────────────────────────────────── */}
         <div className="flex-1 overflow-y-auto bg-gray-100">
 
-          {/* Debug info panel */}
+          {/* Debug panel */}
           {debugInfo && (
             <div className="mx-3 mt-3 bg-yellow-50 border border-yellow-200 rounded-lg text-xs overflow-hidden">
-              <button
-                onClick={() => setShowDebug(d => !d)}
-                className="w-full px-3 py-2 flex items-center justify-between text-yellow-800 font-semibold hover:bg-yellow-100 transition"
-              >
-                <span>
-                  📋 Sheets parsed: {Object.entries(debugInfo.counts).map(([k,v]) => `${k}=${v}`).join(" · ")}
-                </span>
+              <button onClick={() => setShowDebug(d => !d)}
+                className="w-full px-3 py-2 flex items-center justify-between text-yellow-800 font-semibold hover:bg-yellow-100 transition">
+                <span>📋 {Object.entries(debugInfo.counts).map(([k,v]) => `${k}=${v} rows`).join(" · ")}</span>
                 <span>{showDebug ? "▲ Hide" : "▼ Show columns"}</span>
               </button>
               {showDebug && (
                 <div className="px-3 pb-3 space-y-2">
                   {Object.entries(debugInfo.colsByTab).map(([t, cols]) => (
                     <div key={t}>
-                      <p className="text-yellow-800 font-semibold mb-1">{t} columns ({cols.length}):</p>
+                      <p className="text-yellow-800 font-semibold mb-1">{t} ({cols.length} cols):</p>
                       <div className="flex flex-wrap gap-1">
                         {cols.map(c => (
-                          <span key={c} className="bg-yellow-100 border border-yellow-300 rounded px-1.5 py-0.5 text-yellow-900 font-mono">
-                            {c}
-                          </span>
+                          <span key={c} className="bg-yellow-100 border border-yellow-300 rounded px-1.5 py-0.5 text-yellow-900 font-mono">{c}</span>
                         ))}
                       </div>
                     </div>
@@ -525,98 +551,78 @@ export default function Home() {
             </div>
           )}
 
-          {/* Chart card */}
-          <div className="bg-white m-3 rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+          {/* ── Chart card ─────────────────────────────────────────────────── */}
+          <div className="bg-white mx-3 mt-3 rounded-lg shadow-sm border border-gray-200 overflow-hidden">
             {/* Chart header */}
             <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
               <div>
-                <h2 className="font-semibold text-gray-800">
-                  {activeMdef?.label ?? "Select a metric"}
-                </h2>
+                <h2 className="font-semibold text-gray-800">{activeMdef?.label ?? "Select a metric"}</h2>
                 <p className="text-xs text-gray-400 mt-0.5">
                   {filteredRows.length.toLocaleString()} / {srcRows.length.toLocaleString()} rows
                   &nbsp;·&nbsp; {groups.filter(g => !pabGroupSet.has(g)).length} groups
                   &nbsp;·&nbsp; {chartPoints.length} dates
-                  {hasPAB && hasExp && (
-                    <span className="ml-2 text-gray-500">
-                      &nbsp;— solid = Exp &nbsp; dashed = PAB
-                    </span>
-                  )}
+                  {hasPAB && hasExp && <span className="ml-2">— solid=Exp, dashed=PAB</span>}
                 </p>
               </div>
-              {/* Legend chips */}
               <div className="flex flex-wrap gap-1.5 justify-end">
                 {groups.filter(g => !pabGroupSet.has(g)).map((g, i) => (
-                  <span key={g}
-                    className="text-xs px-2 py-0.5 rounded-full font-medium text-white"
-                    style={{ backgroundColor: COLORS[i % COLORS.length] }}>
-                    {g}
-                  </span>
+                  <span key={g} className="text-xs px-2 py-0.5 rounded-full font-medium text-white"
+                    style={{ backgroundColor: COLORS[i % COLORS.length] }}>{g}</span>
                 ))}
               </div>
             </div>
 
-            {/* Chart body */}
-            <div className="p-4" style={{ height: 340 }}>
+            {/* Chart body — vertically resizable */}
+            <div className="px-4 pt-4 pb-0" style={{ height: chartH }}>
               {activeMdef ? (
                 <TrendChart
                   points={chartPoints as { date: string; [k: string]: number | string }[]}
-                  groups={groups}
-                  pabGroups={pabGroupSet}
-                  metric={activeMdef}
-                  fullHeight
+                  groups={groups} pabGroups={pabGroupSet} metric={activeMdef} fullHeight
                 />
               ) : (
                 <div className="h-full flex items-center justify-center text-gray-300">
-                  Select a metric from the sidebar →
+                  Select a metric from the left panel →
                 </div>
               )}
+            </div>
+
+            {/* Chart vertical resize handle */}
+            <div
+              className="h-2 flex items-center justify-center cursor-row-resize hover:bg-blue-50 transition-colors group"
+              onMouseDown={e => onDragStart("ch", e)}
+              title="Drag to resize chart"
+            >
+              <div className="w-10 h-0.5 rounded bg-gray-300 group-hover:bg-blue-400 transition-colors" />
             </div>
           </div>
 
           {/* ── Delta & Confidence tables ─────────────────────────────────── */}
-          <div className={`mx-3 mb-3 grid gap-3 ${hasPAB ? "grid-cols-2" : "grid-cols-1"}`}>
+          <div className={`mx-3 my-3 grid gap-3 ${hasPAB ? "grid-cols-2" : "grid-cols-1"}`}>
 
-            {/* Experiment table */}
+            {/* Experiment */}
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
               <div className="px-4 py-2.5 bg-blue-50 border-b border-blue-100">
-                <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide">
-                  Experiment — Delta &amp; Confidence
-                </p>
-                <p className="text-xs text-blue-400">Aggregated over date range</p>
+                <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide">Experiment — Delta &amp; Confidence</p>
+                <p className="text-xs text-blue-400">Aggregated over selected date range</p>
               </div>
-              <div className="p-3">
-                {activeMdef && hasExp ? (
-                  <SummaryTable
-                    groupSums={expGroupSums}
-                    metric={activeMdef}
-                    controlKey={expCtrlKey}
-                  />
-                ) : (
-                  <p className="text-xs text-gray-400 py-4 text-center">No experiment data</p>
-                )}
+              <div className="p-3 overflow-x-auto">
+                {activeMdef && hasExp
+                  ? <SummaryTable groupSums={expGroupSums} metric={activeMdef} controlKey={expCtrlKey} />
+                  : <p className="text-xs text-gray-400 py-4 text-center">No experiment data</p>}
               </div>
             </div>
 
-            {/* PAB table — only when PAB rows exist */}
+            {/* PAB */}
             {hasPAB && (
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
                 <div className="px-4 py-2.5 bg-amber-50 border-b border-amber-100">
-                  <p className="text-xs font-semibold text-amber-700 uppercase tracking-wide">
-                    PAB — Delta &amp; Confidence
-                  </p>
+                  <p className="text-xs font-semibold text-amber-700 uppercase tracking-wide">PAB — Delta &amp; Confidence</p>
                   <p className="text-xs text-amber-400">Post-acquisition behaviour</p>
                 </div>
-                <div className="p-3">
-                  {activeMdef ? (
-                    <SummaryTable
-                      groupSums={pabGroupSums}
-                      metric={activeMdef}
-                      controlKey={pabCtrlKey}
-                    />
-                  ) : (
-                    <p className="text-xs text-gray-400 py-4 text-center">No PAB data</p>
-                  )}
+                <div className="p-3 overflow-x-auto">
+                  {activeMdef
+                    ? <SummaryTable groupSums={pabGroupSums} metric={activeMdef} controlKey={pabCtrlKey} />
+                    : <p className="text-xs text-gray-400 py-4 text-center">No PAB data</p>}
                 </div>
               </div>
             )}
