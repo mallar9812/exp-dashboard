@@ -1,7 +1,7 @@
-// Web Worker — runs off the main thread so the UI never freezes
+// Web Worker — runs off the main thread
 importScripts('https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js');
 
-// ── Type helpers ─────────────────────────────────────────────────────────────
+// ── Conversion helpers ────────────────────────────────────────────────────────
 
 function toNum(v) {
   if (v == null || v === "") return 0;
@@ -27,21 +27,18 @@ function toDate(v) {
     try {
       const info = XLSX.SSF.parse_date_code(Number(s));
       if (info) return `${info.y}-${String(info.m).padStart(2,"0")}-${String(info.d).padStart(2,"0")}`;
-    } catch(_) {}
+    } catch (_) {}
   }
   return s;
 }
 
-// ── Sheet reader ─────────────────────────────────────────────────────────────
+// ── Row parser — keeps every column, coerces types ────────────────────────────
 
 function sheetToRows(wb, name) {
-  if (!name) return [];
   const sheet = wb.Sheets[name];
   if (!sheet) return [];
   return XLSX.utils.sheet_to_json(sheet, { defval: 0, raw: true });
 }
-
-// ── Row normaliser — passes ALL columns through, converts types ───────────────
 
 function normaliseRow(r, dateCol) {
   const out = {};
@@ -61,46 +58,54 @@ function normaliseRow(r, dateCol) {
   return out;
 }
 
-// ── IR parser ─────────────────────────────────────────────────────────────────
-
-function parseIR(rows) {
-  return rows.map(r => {
-    const out = normaliseRow(r, "install_date");
-    if (!out.install_date) out.install_date = "";
-    for (const c of ["installs","d01_users","d03_users","d05_users","d07_users","d14_users","d21_users","d30_users"]) {
-      out[c] = toNum(out[c] ?? 0);
-    }
-    return out;
-  });
-}
-
-// ── Metrics parser — tags rows with _tab and type ────────────────────────────
-
-function parseMetrics(rows, tab, type) {
-  return rows.map(r => {
-    const out = normaliseRow(r, "dau_date");
-    out._tab = tab;
-    out.type = type;
-    if (!out.dau_date) out.dau_date = "";
-    if (out.dau == null) out.dau = 0; else out.dau = toNum(out.dau);
-    return out;
-  });
-}
-
-// ── Sheet name matching ───────────────────────────────────────────────────────
+// ── Sheet classification — inferred from COLUMN SIGNATURES ────────────────────
 
 /**
- * Find a sheet whose name matches any of the given patterns.
- * Patterns are tested against the lowercased, trimmed sheet name.
+ * Returns { dateCol, tab, isIR } or null if the sheet looks irrelevant.
+ * We never rely on the sheet NAME — only the actual column headers.
  */
-function findSheet(names, ...patterns) {
-  return names.find(n => {
-    const l = n.toLowerCase().trim();
-    return patterns.some(p => (typeof p === "string" ? l === p : p.test(l)));
-  }) ?? null;
+function classifyByColumns(rows) {
+  if (!rows.length) return null;
+  const cols = new Set(Object.keys(rows[0]));
+
+  // IR sheet
+  if (cols.has("install_date") && (cols.has("installs") || cols.has("d01_users"))) {
+    return { dateCol: "install_date", tab: "IR", isIR: true };
+  }
+
+  // Metrics sheets all need dau_date + dau
+  if (!cols.has("dau_date") && !cols.has("dau")) return null;
+  const dateCol = "dau_date";
+
+  // RR
+  if (cols.has("d1_rolling_users") || cols.has("d3_rolling_users") ||
+      cols.has("d1_rr_flag") || cols.has("d3_rr_flag")) {
+    return { dateCol, tab: "RR", isIR: false };
+  }
+  // Sessions
+  if (cols.has("session_length") || cols.has("session_count") ||
+      cols.has("perc_25") || cols.has("median")) {
+    return { dateCol, tab: "Sessions", isIR: false };
+  }
+  // Revenue
+  if (cols.has("total_rev") || cols.has("bn_rev") || cols.has("ad_rev") ||
+      cols.has("iap_rev") || cols.has("bn_imp")) {
+    return { dateCol, tab: "Revenue", isIR: false };
+  }
+  // Engagement — any column ending _actions
+  const hasActions = [...cols].some(c => c.endsWith("_actions"));
+  if (hasActions) {
+    return { dateCol, tab: "Engagement", isIR: false };
+  }
+
+  // Fallback: generic metrics sheet — we'll assign ALL tabs so it shows everywhere
+  return { dateCol, tab: "ALL", isIR: false };
 }
 
-// ── Helper: detect engagement columns ────────────────────────────────────────
+/** Is this sheet name a PAB sheet? */
+function isPABName(name) {
+  return /pab/i.test(name);
+}
 
 const KNOWN_AD_USER_COLS = new Set([
   "iap_users","bn_users","it_users","w2e_users","app_open_users",
@@ -118,109 +123,94 @@ function uniqueVals(rows, col) {
   return [...new Set(rows.map(r => toStr(r[col])))].filter(Boolean).sort();
 }
 
-// ── Worker entry point ────────────────────────────────────────────────────────
+// ── Worker ────────────────────────────────────────────────────────────────────
 
-self.onmessage = function(e) {
+self.onmessage = function (e) {
   const buffer = e.data;
   try {
     self.postMessage({ type: "progress", message: "Parsing Excel…" });
 
     const wb = XLSX.read(buffer, { type: "array", cellDates: true });
     const names = wb.SheetNames;
-    self.postMessage({ type: "progress", message: `Sheets: ${names.join(", ")}` });
+    self.postMessage({ type: "progress", message: `Sheets found: ${names.join(", ")}` });
 
-    // ── IR ────────────────────────────────────────────────────────────────────
-    const irName = findSheet(names,
-      "ir", /install\s*retention/, /install/
-    ) ?? names[0];
-    const ir = parseIR(sheetToRows(wb, irName));
-    self.postMessage({ type: "progress", message: `IR: ${ir.length} rows (sheet: "${irName}")` });
-
-    // ── Metric sheet definitions ──────────────────────────────────────────────
-    // Each entry: { tab, expSheet, pabSheet }
-    // We support two layouts:
-    //   A) Separate sheets per tab: "RR", "RR PAB", "Sessions", "Sessions PAB", ...
-    //   B) Single combined sheets:  "DAU" (experiment) + "PAB" (all pab)
-
-    const METRIC_DEFS = [
-      {
-        tab: "RR",
-        expSheet:  findSheet(names, "rr", /^rolling\s*ret/),
-        pabSheet:  findSheet(names, "rr pab", /^rr\s+pab/, /^rolling.*pab/),
-      },
-      {
-        tab: "Sessions",
-        expSheet:  findSheet(names, "sessions", "session"),
-        pabSheet:  findSheet(names, "sessions pab", "session pab", /session.*pab/),
-      },
-      {
-        tab: "Revenue",
-        expSheet:  findSheet(names, "revenue", "rev"),
-        pabSheet:  findSheet(names, "revenue pab", "rev pab", /revenue.*pab/),
-      },
-      {
-        tab: "Engagement",
-        expSheet:  findSheet(names, "engagement", "engage"),
-        pabSheet:  findSheet(names, "engagement pab", "engage pab", /engagement.*pab/),
-      },
-    ];
-
-    // Fallback: if none of the per-tab sheets were found, try legacy "DAU" / "PAB"
-    const hasPerTabSheets = METRIC_DEFS.some(d => d.expSheet !== null);
-    const legacyDauSheet = !hasPerTabSheets ? findSheet(names, "dau", "metrics") : null;
-    const legacyPabSheet = !hasPerTabSheets ? findSheet(names, "pab") : null;
-
+    let ir = [];
     let metrics = [];
     let engagementCols = [];
     const detectedColsByTab = {};
-    const rowCounts = { ir: ir.length };
+    const rowCounts = {};
+    const sheetLog = [];
 
-    if (hasPerTabSheets) {
-      // ── Layout A: separate sheets per tab ────────────────────────────────
-      for (const { tab, expSheet, pabSheet } of METRIC_DEFS) {
-        const expRaw = expSheet ? sheetToRows(wb, expSheet) : [];
-        const pabRaw = pabSheet ? sheetToRows(wb, pabSheet) : [];
+    // ── Process every sheet ───────────────────────────────────────────────────
+    for (const name of names) {
+      const rawRows = sheetToRows(wb, name);
+      if (!rawRows.length) {
+        sheetLog.push(`"${name}": empty`);
+        continue;
+      }
 
-        const expRows = parseMetrics(expRaw, tab, "experiment");
-        const pabRows = parseMetrics(pabRaw, tab, "PAB");
+      const cls = classifyByColumns(rawRows);
+      if (!cls) {
+        sheetLog.push(`"${name}": unrecognised (cols: ${Object.keys(rawRows[0]).slice(0,6).join(",")}…)`);
+        continue;
+      }
 
-        // Detected columns for this tab (from exp sheet, fall back to pab sheet)
-        const sampleRaw = expRaw.length ? expRaw : pabRaw;
-        detectedColsByTab[tab] = sampleRaw.length ? Object.keys(normaliseRow(sampleRaw[0], "dau_date")) : [];
+      const type = isPABName(name) ? "PAB" : "experiment";
 
-        if (tab === "Engagement") {
-          engagementCols = detectEngagementCols(sampleRaw);
+      if (cls.isIR) {
+        // IR sheet — only take first one found
+        if (ir.length === 0) {
+          ir = rawRows.map(r => {
+            const out = normaliseRow(r, "install_date");
+            if (!out.install_date) out.install_date = "";
+            for (const c of ["installs","d01_users","d03_users","d05_users","d07_users","d14_users","d21_users","d30_users"]) {
+              out[c] = toNum(out[c] ?? 0);
+            }
+            return out;
+          });
+          rowCounts["IR"] = ir.length;
+          sheetLog.push(`"${name}": IR (${ir.length} rows)`);
+        }
+      } else {
+        // Metrics sheet
+        const tab = cls.tab;
+        const parsedRows = rawRows.map(r => {
+          const out = normaliseRow(r, "dau_date");
+          out._tab  = tab;
+          out.type  = type;
+          if (!out.dau_date) out.dau_date = "";
+          out.dau   = toNum(out.dau ?? 0);
+          return out;
+        });
+
+        // Record detected columns per tab (from experiment sheet if available)
+        if (!detectedColsByTab[tab] || type === "experiment") {
+          detectedColsByTab[tab] = Object.keys(parsedRows[0] || {});
         }
 
-        metrics.push(...expRows, ...pabRows);
-        rowCounts[tab] = expRows.length;
-        rowCounts[`${tab} PAB`] = pabRows.length;
+        // Engagement cols from any engagement sheet
+        if (tab === "Engagement" && engagementCols.length === 0) {
+          engagementCols = detectEngagementCols(rawRows);
+        }
 
-        self.postMessage({
-          type: "progress",
-          message: `${tab}: ${expRows.length} exp + ${pabRows.length} PAB rows`,
-        });
+        // If tab === "ALL" (unknown), tag for every metric tab so it's visible everywhere
+        if (tab === "ALL") {
+          for (const t of ["RR","Sessions","Revenue","Engagement"]) {
+            metrics.push(...parsedRows.map(r => ({ ...r, _tab: t })));
+          }
+        } else {
+          metrics.push(...parsedRows);
+        }
+
+        const key = type === "PAB" ? `${tab} PAB` : tab;
+        rowCounts[key] = (rowCounts[key] ?? 0) + parsedRows.length;
+        sheetLog.push(`"${name}": ${tab} / ${type} (${parsedRows.length} rows)`);
       }
-    } else {
-      // ── Layout B: legacy single DAU / PAB sheets ──────────────────────────
-      const dauRaw = legacyDauSheet ? sheetToRows(wb, legacyDauSheet) : [];
-      const pabRaw = legacyPabSheet ? sheetToRows(wb, legacyPabSheet) : [];
-      const sampleRaw = dauRaw.length ? dauRaw : pabRaw;
-      engagementCols = detectEngagementCols(sampleRaw);
-      const allCols = sampleRaw.length ? Object.keys(normaliseRow(sampleRaw[0], "dau_date")) : [];
-      for (const tab of ["RR","Sessions","Revenue","Engagement"]) detectedColsByTab[tab] = allCols;
-
-      const dauRows = parseMetrics(dauRaw, "ALL", "experiment");
-      const pabRows = parseMetrics(pabRaw, "ALL", "PAB");
-      // Reassign _tab based on presence of distinguishing columns for legacy layout
-      // (no per-tab detection possible, show all metrics under every tab)
-      metrics = [...dauRows, ...pabRows];
-      rowCounts["DAU"] = dauRows.length;
-      rowCounts["PAB"] = pabRows.length;
-      self.postMessage({ type: "progress", message: `Legacy DAU: ${dauRows.length}, PAB: ${pabRows.length}` });
     }
 
-    // ── Filter options (from all metric rows combined) ─────────────────────
+    self.postMessage({ type: "progress", message: `Sheet map: ${sheetLog.join(" | ")}` });
+
+    // ── Filter options ─────────────────────────────────────────────────────────
     const filterOptions = {
       type:           uniqueVals(metrics, "type"),
       geo:            uniqueVals(metrics, "geo"),
@@ -237,11 +227,15 @@ self.onmessage = function(e) {
       type: "done",
       data: {
         ir, metrics, engagementCols,
-        filterOptions, detectedColsByTab, rowCounts,
-        hasPerTabSheets,
+        filterOptions,
+        detectedColsByTab,
+        rowCounts,
+        hasPerTabSheets: true,   // always use _tab filtering now
+        sheetLog,
       },
     });
+
   } catch (err) {
-    self.postMessage({ type: "error", message: err.message + "\n" + err.stack });
+    self.postMessage({ type: "error", message: err.message + "\n" + (err.stack || "") });
   }
 };

@@ -121,7 +121,7 @@ export default function Home() {
   const [data,         setData]        = useState<ParsedData | null>(null);
   const [loading,      setLoading]     = useState(false);
   const [loadingMsg,   setLoadingMsg]  = useState("");
-  const [debugInfo,    setDebugInfo]   = useState<{ colsByTab: Record<string,string[]>; counts: Record<string,number> } | null>(null);
+  const [debugInfo,    setDebugInfo]   = useState<{ colsByTab: Record<string,string[]>; counts: Record<string,number>; sheetLog: string[] } | null>(null);
   const [showDebug,    setShowDebug]   = useState(false);
 
   const [tab,        setTab]       = useState<TabType>("IR");
@@ -139,14 +139,20 @@ export default function Home() {
     const reader = new FileReader();
     reader.onload = ev => {
       const buffer = ev.target?.result as ArrayBuffer;
-      const worker = new Worker("/worker.js");
+      // Cache-bust so browser always loads the latest worker
+      const worker = new Worker(`/worker.js?v=${Date.now()}`);
       worker.onmessage = msg => {
         const { type, message, data: d } = msg.data;
         if (type === "progress") { setLoadingMsg(message); return; }
         if (type === "done") {
           const parsed = d as ParsedData & { filterOptions: Record<string, string[]> };
           setData(parsed);
-          setDebugInfo({ colsByTab: parsed.detectedColsByTab ?? {}, counts: parsed.rowCounts ?? {} });
+          const p2 = parsed as typeof parsed & { sheetLog?: string[] };
+          setDebugInfo({
+            colsByTab: parsed.detectedColsByTab ?? {},
+            counts: parsed.rowCounts ?? {},
+            sheetLog: p2.sheetLog ?? [],
+          });
           const variants = parsed.filterOptions?.variant ?? [];
           setControl(variants.find(v => v.toLowerCase().includes("control")) ?? variants[0] ?? "control");
           // init date range from IR dates
@@ -304,7 +310,9 @@ export default function Home() {
     setTab(t); setMetricKey(""); setFilters(EMPTY_FILTERS);
     if (data) {
       const field = t === "IR" ? "install_date" : "dau_date";
-      const src   = (t === "IR" ? data.ir : data.metrics) as Record<string, unknown>[];
+      const src   = t === "IR"
+        ? (data.ir as Record<string, unknown>[])
+        : (data.metrics as Record<string, unknown>[]).filter(r => String(r._tab) === t);
       const dates = [...new Set(src.map(r => String(r[field] ?? "").slice(0,10)))].filter(Boolean).sort();
       if (dates.length) setDateRange([dates[0], dates[dates.length - 1]]);
     }
@@ -531,14 +539,22 @@ export default function Home() {
             <div className="mx-3 mt-3 bg-yellow-50 border border-yellow-200 rounded-lg text-xs overflow-hidden">
               <button onClick={() => setShowDebug(d => !d)}
                 className="w-full px-3 py-2 flex items-center justify-between text-yellow-800 font-semibold hover:bg-yellow-100 transition">
-                <span>📋 {Object.entries(debugInfo.counts).map(([k,v]) => `${k}=${v} rows`).join(" · ")}</span>
-                <span>{showDebug ? "▲ Hide" : "▼ Show columns"}</span>
+                <span>📋 {Object.entries(debugInfo.counts).map(([k,v]) => `${k}=${v}`).join(" · ")} rows</span>
+                <span>{showDebug ? "▲ Hide" : "▼ Details"}</span>
               </button>
               {showDebug && (
-                <div className="px-3 pb-3 space-y-2">
+                <div className="px-3 pb-3 space-y-3">
+                  {/* Sheet classification log */}
+                  <div>
+                    <p className="text-yellow-800 font-semibold mb-1">Sheet detection:</p>
+                    {debugInfo.sheetLog.map((l, i) => (
+                      <p key={i} className="font-mono text-yellow-900">{l}</p>
+                    ))}
+                  </div>
+                  {/* Per-tab columns */}
                   {Object.entries(debugInfo.colsByTab).map(([t, cols]) => (
                     <div key={t}>
-                      <p className="text-yellow-800 font-semibold mb-1">{t} ({cols.length} cols):</p>
+                      <p className="text-yellow-800 font-semibold mb-1">{t} columns ({cols.length}):</p>
                       <div className="flex flex-wrap gap-1">
                         {cols.map(c => (
                           <span key={c} className="bg-yellow-100 border border-yellow-300 rounded px-1.5 py-0.5 text-yellow-900 font-mono">{c}</span>
