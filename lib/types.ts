@@ -84,7 +84,7 @@ export interface ParsedData {
   ir: IRRow[];
   metrics: MetricsRow[];          // all non-IR rows; each row has _tab + type fields
   engagementCols: string[];
-  detectedColsByTab: Record<string, string[]>;  // tab → column names actually found
+  detectedColsByTab?: Record<string, string[]>;  // tab → column names actually found
   detectedCols?: string[];        // legacy / flat list
   rowCounts?: Record<string, number>;
   filterOptions?: Record<string, string[]>;
