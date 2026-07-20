@@ -25,15 +25,29 @@ interface ChartPoint {
 
 interface TrendChartProps {
   points: ChartPoint[];
-  groups: string[];
+  groups: string[];           // all group keys (exp + PAB)
+  pabGroups?: Set<string>;    // which keys are PAB → rendered dashed
   metric: MetricDef;
   fullHeight?: boolean;
 }
 
-export default function TrendChart({ points, groups, metric, fullHeight }: TrendChartProps) {
+export default function TrendChart({
+  points, groups, pabGroups = new Set(), metric, fullHeight,
+}: TrendChartProps) {
   if (!points.length) return (
-    <div className="flex items-center justify-center h-64 text-gray-400">No data for selected filters</div>
+    <div className="flex items-center justify-center h-64 text-gray-400">
+      No data for selected filters
+    </div>
   );
+
+  // Exp groups get index-based colors; PAB groups reuse the same color (just dashed)
+  const expGroups = groups.filter(g => !pabGroups.has(g));
+  const colorFor  = (g: string): string => {
+    if (!pabGroups.has(g)) return COLORS[expGroups.indexOf(g) % COLORS.length];
+    const base = g.replace(" (PAB)", "");
+    const idx  = expGroups.indexOf(base);
+    return COLORS[idx >= 0 ? idx : 0] ?? "#999";
+  };
 
   return (
     <ResponsiveContainer width="100%" height={fullHeight ? "100%" : 300}>
@@ -42,7 +56,7 @@ export default function TrendChart({ points, groups, metric, fullHeight }: Trend
         <XAxis
           dataKey="date"
           tick={{ fontSize: 11 }}
-          tickFormatter={d => d.slice(5)}   // show MM-DD only
+          tickFormatter={d => d.slice(5)}
           minTickGap={30}
         />
         <YAxis
@@ -51,18 +65,19 @@ export default function TrendChart({ points, groups, metric, fullHeight }: Trend
           width={72}
         />
         <Tooltip
-          formatter={(v: number) => formatVal(v, metric.format)}
+          formatter={(v: number, name: string) => [formatVal(v, metric.format), name]}
           labelFormatter={l => `Date: ${l}`}
         />
         <Legend />
-        {groups.map((g, i) => (
+        {groups.map(g => (
           <Line
             key={g}
             type="monotone"
             dataKey={g}
             name={g}
-            stroke={COLORS[i % COLORS.length]}
+            stroke={colorFor(g)}
             strokeWidth={2}
+            strokeDasharray={pabGroups.has(g) ? "6 3" : undefined}
             dot={false}
             connectNulls
           />
