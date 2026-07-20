@@ -81,17 +81,18 @@ export function buildEngagementMetrics(engagementCols: string[]): MetricDef[] {
 }
 
 /**
- * Filter static + engagement metrics to only those whose numerator AND denominator
- * columns actually exist in the parsed data.  This prevents metrics from silently
- * showing 0 when column names in the Excel differ from the expected names.
+ * Filter metrics so only those whose numerator AND denominator columns
+ * actually exist in the data are shown. Uses per-tab column detection.
  */
 export function filterToAvailableMetrics(
   allMetrics: MetricDef[],
-  detectedCols: string[],
+  detectedColsByTab: Record<string, string[]>,
 ): MetricDef[] {
-  const colSet = new Set(detectedCols);
-  // Always allow IR metrics (they run against the IR sheet, not metrics sheet)
-  return allMetrics.filter(
-    m => m.tab === "IR" || (colSet.has(m.numerator) && colSet.has(m.denominator)),
-  );
+  return allMetrics.filter(m => {
+    if (m.tab === "IR") return true;  // IR uses its own sheet
+    const cols = detectedColsByTab[m.tab];
+    if (!cols || cols.length === 0) return true;  // no info → show all
+    const colSet = new Set(cols);
+    return colSet.has(m.numerator) && colSet.has(m.denominator);
+  });
 }

@@ -82,13 +82,15 @@ export interface MetricsRow {
 
 export interface ParsedData {
   ir: IRRow[];
-  metrics: MetricsRow[];
-  engagementCols: string[];   // dynamic: e.g. ["overall_clear_actions", "main_clear_actions", ...]
-  detectedCols?: string[];    // all column names found in the metrics sheet (for debugging)
+  metrics: MetricsRow[];          // all non-IR rows; each row has _tab + type fields
+  engagementCols: string[];
+  detectedColsByTab: Record<string, string[]>;  // tab → column names actually found
+  detectedCols?: string[];        // legacy / flat list
   rowCounts?: Record<string, number>;
   filterOptions?: Record<string, string[]>;
-  irDims: string[];
-  metricsDims: string[];
+  hasPerTabSheets?: boolean;
+  irDims?: string[];
+  metricsDims?: string[];
 }
 
 export interface MetricDef {

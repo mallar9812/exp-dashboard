@@ -121,7 +121,7 @@ export default function Home() {
   const [data,         setData]        = useState<ParsedData | null>(null);
   const [loading,      setLoading]     = useState(false);
   const [loadingMsg,   setLoadingMsg]  = useState("");
-  const [debugInfo,    setDebugInfo]   = useState<{ cols: string[]; counts: Record<string,number> } | null>(null);
+  const [debugInfo,    setDebugInfo]   = useState<{ colsByTab: Record<string,string[]>; counts: Record<string,number> } | null>(null);
   const [showDebug,    setShowDebug]   = useState(false);
 
   const [tab,        setTab]       = useState<TabType>("IR");
@@ -146,8 +146,7 @@ export default function Home() {
         if (type === "done") {
           const parsed = d as ParsedData & { filterOptions: Record<string, string[]> };
           setData(parsed);
-          // Store debug info (col names + row counts)
-          setDebugInfo({ cols: parsed.detectedCols ?? [], counts: parsed.rowCounts ?? {} });
+          setDebugInfo({ colsByTab: parsed.detectedColsByTab ?? {}, counts: parsed.rowCounts ?? {} });
           const variants = parsed.filterOptions?.variant ?? [];
           setControl(variants.find(v => v.toLowerCase().includes("control")) ?? variants[0] ?? "control");
           // init date range from IR dates
@@ -166,12 +165,12 @@ export default function Home() {
     reader.readAsArrayBuffer(file);
   }, []);
 
-  // ── Metrics — only show metrics whose columns exist in the data ────────────
+  // ── Metrics — only show metrics whose columns exist in per-tab data ────────
   const allMetrics = useMemo(() => {
-    const eng  = data ? buildEngagementMetrics(data.engagementCols) : [];
-    const all  = [...STATIC_METRICS, ...eng];
-    const cols = data?.detectedCols ?? [];
-    return cols.length ? filterToAvailableMetrics(all, cols) : all;
+    const eng       = data ? buildEngagementMetrics(data.engagementCols) : [];
+    const all       = [...STATIC_METRICS, ...eng];
+    const byTab     = data?.detectedColsByTab ?? {};
+    return Object.keys(byTab).length ? filterToAvailableMetrics(all, byTab) : all;
   }, [data]);
 
   const tabMetrics = useMemo(() => allMetrics.filter(m => m.tab === tab), [allMetrics, tab]);
@@ -188,13 +187,16 @@ export default function Home() {
     return map;
   }, [tabMetrics]);
 
-  // ── Source rows ────────────────────────────────────────────────────────────
+  // ── Source rows — per tab ─────────────────────────────────────────────────
   const dateField = tab === "IR" ? "install_date" : "dau_date";
 
-  const srcRows = useMemo(
-    () => (tab === "IR" ? data?.ir ?? [] : data?.metrics ?? []) as Record<string, unknown>[],
-    [data, tab],
-  );
+  const srcRows = useMemo(() => {
+    if (tab === "IR") return (data?.ir ?? []) as Record<string, unknown>[];
+    const all = (data?.metrics ?? []) as Record<string, unknown>[];
+    // If per-tab sheets: filter by _tab; if legacy single sheet: use all rows
+    const hasPerTab = data?.hasPerTabSheets ?? false;
+    return hasPerTab ? all.filter(r => String(r._tab) === tab) : all;
+  }, [data, tab]);
 
   // ── Live filter options from current tab data ──────────────────────────────
   const filterOpts = useMemo(() => ({
@@ -500,21 +502,24 @@ export default function Home() {
                 className="w-full px-3 py-2 flex items-center justify-between text-yellow-800 font-semibold hover:bg-yellow-100 transition"
               >
                 <span>
-                  📋 Parsed: IR={debugInfo.counts.ir ?? 0} rows · Metrics={debugInfo.counts.metrics ?? 0} rows
-                  &nbsp;·&nbsp; {debugInfo.cols.length} columns detected
+                  📋 Sheets parsed: {Object.entries(debugInfo.counts).map(([k,v]) => `${k}=${v}`).join(" · ")}
                 </span>
                 <span>{showDebug ? "▲ Hide" : "▼ Show columns"}</span>
               </button>
               {showDebug && (
-                <div className="px-3 pb-3">
-                  <p className="text-yellow-700 mb-1">Columns found in metrics sheet (use these exact names in metrics.ts if data is missing):</p>
-                  <div className="flex flex-wrap gap-1">
-                    {debugInfo.cols.map(c => (
-                      <span key={c} className="bg-yellow-100 border border-yellow-300 rounded px-1.5 py-0.5 text-yellow-900 font-mono">
-                        {c}
-                      </span>
-                    ))}
-                  </div>
+                <div className="px-3 pb-3 space-y-2">
+                  {Object.entries(debugInfo.colsByTab).map(([t, cols]) => (
+                    <div key={t}>
+                      <p className="text-yellow-800 font-semibold mb-1">{t} columns ({cols.length}):</p>
+                      <div className="flex flex-wrap gap-1">
+                        {cols.map(c => (
+                          <span key={c} className="bg-yellow-100 border border-yellow-300 rounded px-1.5 py-0.5 text-yellow-900 font-mono">
+                            {c}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
