@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useMemo } from "react";
-import { STATIC_METRICS, buildEngagementMetrics } from "@/lib/metrics";
+import { STATIC_METRICS, buildEngagementMetrics, filterToAvailableMetrics } from "@/lib/metrics";
 import TrendChart from "@/components/TrendChart";
 import SummaryTable from "@/components/SummaryTable";
 import type { ParsedData, TabType, GroupBy, MetricDef } from "@/lib/types";
@@ -118,9 +118,11 @@ function MultiSelect({
 // ── Main page ──────────────────────────────────────────────────────────────────
 
 export default function Home() {
-  const [data,       setData]      = useState<ParsedData | null>(null);
-  const [loading,    setLoading]   = useState(false);
-  const [loadingMsg, setLoadingMsg]= useState("");
+  const [data,         setData]        = useState<ParsedData | null>(null);
+  const [loading,      setLoading]     = useState(false);
+  const [loadingMsg,   setLoadingMsg]  = useState("");
+  const [debugInfo,    setDebugInfo]   = useState<{ cols: string[]; counts: Record<string,number> } | null>(null);
+  const [showDebug,    setShowDebug]   = useState(false);
 
   const [tab,        setTab]       = useState<TabType>("IR");
   const [groupBy,    setGroupBy]   = useState<GroupBy>("variant");
@@ -144,6 +146,8 @@ export default function Home() {
         if (type === "done") {
           const parsed = d as ParsedData & { filterOptions: Record<string, string[]> };
           setData(parsed);
+          // Store debug info (col names + row counts)
+          setDebugInfo({ cols: parsed.detectedCols ?? [], counts: parsed.rowCounts ?? {} });
           const variants = parsed.filterOptions?.variant ?? [];
           setControl(variants.find(v => v.toLowerCase().includes("control")) ?? variants[0] ?? "control");
           // init date range from IR dates
@@ -162,10 +166,12 @@ export default function Home() {
     reader.readAsArrayBuffer(file);
   }, []);
 
-  // ── Metrics ────────────────────────────────────────────────────────────────
+  // ── Metrics — only show metrics whose columns exist in the data ────────────
   const allMetrics = useMemo(() => {
-    const eng = data ? buildEngagementMetrics(data.engagementCols) : [];
-    return [...STATIC_METRICS, ...eng];
+    const eng  = data ? buildEngagementMetrics(data.engagementCols) : [];
+    const all  = [...STATIC_METRICS, ...eng];
+    const cols = data?.detectedCols ?? [];
+    return cols.length ? filterToAvailableMetrics(all, cols) : all;
   }, [data]);
 
   const tabMetrics = useMemo(() => allMetrics.filter(m => m.tab === tab), [allMetrics, tab]);
@@ -485,6 +491,34 @@ export default function Home() {
 
         {/* ── Chart area ───────────────────────────────────────────────────── */}
         <div className="flex-1 overflow-y-auto bg-gray-100">
+
+          {/* Debug info panel */}
+          {debugInfo && (
+            <div className="mx-3 mt-3 bg-yellow-50 border border-yellow-200 rounded-lg text-xs overflow-hidden">
+              <button
+                onClick={() => setShowDebug(d => !d)}
+                className="w-full px-3 py-2 flex items-center justify-between text-yellow-800 font-semibold hover:bg-yellow-100 transition"
+              >
+                <span>
+                  📋 Parsed: IR={debugInfo.counts.ir ?? 0} rows · Metrics={debugInfo.counts.metrics ?? 0} rows
+                  &nbsp;·&nbsp; {debugInfo.cols.length} columns detected
+                </span>
+                <span>{showDebug ? "▲ Hide" : "▼ Show columns"}</span>
+              </button>
+              {showDebug && (
+                <div className="px-3 pb-3">
+                  <p className="text-yellow-700 mb-1">Columns found in metrics sheet (use these exact names in metrics.ts if data is missing):</p>
+                  <div className="flex flex-wrap gap-1">
+                    {debugInfo.cols.map(c => (
+                      <span key={c} className="bg-yellow-100 border border-yellow-300 rounded px-1.5 py-0.5 text-yellow-900 font-mono">
+                        {c}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Chart card */}
           <div className="bg-white m-3 rounded-lg shadow-sm border border-gray-200 overflow-hidden">

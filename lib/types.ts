@@ -84,6 +84,9 @@ export interface ParsedData {
   ir: IRRow[];
   metrics: MetricsRow[];
   engagementCols: string[];   // dynamic: e.g. ["overall_clear_actions", "main_clear_actions", ...]
+  detectedCols?: string[];    // all column names found in the metrics sheet (for debugging)
+  rowCounts?: Record<string, number>;
+  filterOptions?: Record<string, string[]>;
   irDims: string[];
   metricsDims: string[];
 }

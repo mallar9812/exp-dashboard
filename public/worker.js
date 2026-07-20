@@ -37,11 +37,15 @@ function toDate(v) {
   return s;
 }
 
-/** Parse a sheet into plain JS objects, with dates as JS Date objects */
+/**
+ * Parse a sheet into plain JS objects.
+ * raw:true → numbers stay as numbers (avoids "1,234" / "45.20%" formatting issues).
+ * cellDates on XLSX.read already makes date cells JS Date objects.
+ */
 function sheetToRows(wb, name) {
   const sheet = wb.Sheets[name];
   if (!sheet) return [];
-  return XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false });
+  return XLSX.utils.sheet_to_json(sheet, { defval: 0, raw: true });
 }
 
 /** Keep every column from the raw row; only coerce types */
@@ -49,15 +53,16 @@ function normaliseRow(r, dateCol) {
   const out = {};
   for (const [k, v] of Object.entries(r)) {
     if (k === dateCol) {
-      out[k] = toDate(v);
+      out[k] = toDate(v);          // normalise date → "YYYY-MM-DD"
     } else if (typeof v === "number") {
-      out[k] = v;
+      out[k] = v;                  // already a number (raw:true)
     } else if (v instanceof Date) {
-      out[k] = toDate(v);
+      out[k] = toDate(v);          // date cell in non-date column
     } else {
-      // Try to coerce numeric-looking strings to numbers (metric values)
-      const n = Number(v);
-      out[k] = (!isNaN(n) && v !== "") ? n : toStr(v);
+      // String cell – try numeric coercion but keep as string if it fails
+      const s = String(v).trim();
+      const n = Number(s.replace(/,/g, ""));   // strip thousand-separators
+      out[k] = (s !== "" && !isNaN(n)) ? n : s;
     }
   }
   return out;
@@ -160,10 +165,15 @@ self.onmessage = function (e) {
       variant:        uniqueVals(metrics, "variant"),
     };
 
+    // Expose detected column names for debugging
+    const detectedCols = metrics.length ? Object.keys(metrics[0]) : [];
+
     self.postMessage({
       type: "done",
       data: {
         ir, metrics, engagementCols, filterOptions,
+        detectedCols,
+        rowCounts: { ir: ir.length, metrics: metrics.length },
         irDims:      ["geo","install_bucket","install_source","install_type","variant","sub_variant"],
         metricsDims: ["type","geo","user_type","cohort","payer_flag","install_bucket","install_source","install_type","variant","sub_variant"],
       },
